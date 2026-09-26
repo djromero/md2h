@@ -1,0 +1,305 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  printf 'Usage: md2h [input.md] [--option|-o <output.html>] [--embed-images|-e] [--slides] [--linked] [--howto <option>]\n' >&2
+}
+
+slides_howto() {
+  cat <<'EOF'
+Slide deck Markdown format
+
+- Start each main slide with a level-1 heading (`# Slide title`).
+- Write the slide content below its heading using standard Markdown.
+- Use `---` within a main slide to start a vertical subslide.
+- Use `#` or `# ---` for a slide with no visible title. One or two plain-text
+  lines on a title-less slide create a simple cover slide.
+- Images and diagrams are supported. Image paths must be reachable from the
+  Markdown file. For a clear layout, keep one image or one diagram per slide,
+  or place additional visuals on vertical subslides.
+
+Example:
+
+    # Welcome
+
+    A short introduction to the topic.
+
+    # Key points
+
+    - First point
+    - Second point
+
+    ---
+
+    ## More detail
+
+    This is a vertical subslide of **Key points**.
+EOF
+}
+
+output_file=""
+embed_images=false
+slides=false
+linked=false
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --option|-o)
+      if [[ -z ${2:-} ]]; then
+        printf 'md2h: --option requires an argument\n' >&2
+        exit 1
+      fi
+      output_file=$2
+      shift 2
+      ;;
+    --embed-images|-e)
+      embed_images=true
+      shift
+      ;;
+    --slides)
+      slides=true
+      shift
+      ;;
+    --linked)
+      linked=true
+      shift
+      ;;
+    --howto)
+      if [[ -z ${2:-} ]]; then
+        printf 'md2h: --howto requires an option\n' >&2
+        exit 1
+      fi
+      case $2 in
+        slides)
+          slides_howto
+          exit 0
+          ;;
+        *)
+          printf 'md2h: unknown how-to topic: %s (available: slides)\n' "$2" >&2
+          exit 1
+          ;;
+      esac
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    -*)
+      printf 'md2h: unknown option: %s\n' "$1" >&2
+      usage
+      exit 1
+      ;;
+    *)
+      if [[ -n ${input:-} ]]; then
+        printf 'md2h: multiple input files specified\n' >&2
+        usage
+        exit 1
+      fi
+      input=$1
+      shift
+      ;;
+  esac
+done
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+converter=${MD2H_CONVERTER:-"$script_dir/markdown-to-html.js"}
+resource_dir=${MD2H_RESOURCE_DIR:-"$HOME/.local/md2h"}
+
+resource_path() {
+  local name=$1
+
+  if [[ -f "$resource_dir/$name" ]]; then
+    printf '%s\n' "$resource_dir/$name"
+  else
+    printf '%s\n' "$script_dir/$name"
+  fi
+}
+
+if [[ ! -f "$converter" ]]; then
+  printf 'md2h: converter not found: %s\n' "$converter" >&2
+  exit 1
+fi
+
+detect_glow_style() {
+  if [[ $(uname -s) != Darwin ]]; then
+    printf 'auto\n'
+    return
+  fi
+
+  local interface_style
+  interface_style=$(defaults read -g AppleInterfaceStyle 2>/dev/null || true)
+  if [[ $interface_style == Dark ]]; then
+    printf 'dark\n'
+  else
+    printf 'light\n'
+  fi
+}
+
+picker_title() {
+  local file=$1
+  local filename
+  filename=$(basename -- "$file")
+
+  awk -v filename="$filename" '
+    function emit(value) {
+      sub(/^[[:space:]]+/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+      if ((value ~ /^".*"$/) || (value ~ /^\047.*\047$/)) {
+        value = substr(value, 2, length(value) - 2)
+      }
+      gsub(/\t/, " ", value)
+      if (value != "") {
+        found = 1
+        print value
+        exit
+      }
+    }
+
+    NR == 1 {
+      sub(/\r$/, "")
+      if ($0 == "---") {
+        in_front_matter = 1
+        next
+      }
+    }
+
+    in_front_matter {
+      sub(/\r$/, "")
+      if ($0 == "---" || $0 == "...") {
+        in_front_matter = 0
+        next
+      }
+      if ($0 ~ /^title[[:space:]]*:/) {
+        value = $0
+        sub(/^title[[:space:]]*:[[:space:]]*/, "", value)
+        emit(value)
+      }
+      next
+    }
+
+    {
+      sub(/\r$/, "")
+      if ($0 ~ /^[[:space:]]*```/) {
+        in_code_fence = !in_code_fence
+        next
+      }
+      if (in_code_fence) next
+      if ($0 ~ /^#[[:space:]]+/) {
+        value = $0
+        sub(/^#[[:space:]]+/, "", value)
+        sub(/[[:space:]]+#+[[:space:]]*$/, "", value)
+        emit(value)
+      }
+    }
+
+    END {
+      if (!found) print filename
+    }
+  ' "$file"
+}
+
+pick_file() {
+  if ! command -v fzf >/dev/null 2>&1; then
+    printf 'md2h: fzf is required for picker mode\n' >&2
+    exit 1
+  fi
+
+  export MD2H_PICK_MD2H="$script_dir/md2h"
+  export MD2H_PICK_SEARCH_DIR=$PWD
+  export MD2H_PICK_DARK_STYLE
+  MD2H_PICK_DARK_STYLE=$(resource_path glow-dark.json)
+  export MD2H_PICK_LIGHT_STYLE
+  MD2H_PICK_LIGHT_STYLE=$(resource_path glow-light.json)
+  export MD2H_PICK_GLOW_STYLE=${GLOW_STYLE:-$(detect_glow_style)}
+
+  preview='
+if command -v glow >/dev/null 2>&1; then
+  glow_width=${FZF_PREVIEW_COLUMNS:-120}
+  if [[ $glow_width =~ ^[0-9]+$ ]] && (( glow_width > 4 )); then
+    glow_width=$((glow_width - 2))
+  fi
+  glow_style=$MD2H_PICK_GLOW_STYLE
+  if [[ $glow_style == dark && -f $MD2H_PICK_DARK_STYLE ]]; then
+    glow_style=$MD2H_PICK_DARK_STYLE
+  elif [[ $glow_style == light && -f $MD2H_PICK_LIGHT_STYLE ]]; then
+    glow_style=$MD2H_PICK_LIGHT_STYLE
+  fi
+  TERM=${TERM:-xterm-256color} COLORTERM=${COLORTERM:-truecolor} CLICOLOR_FORCE=1 \
+    glow --style "$glow_style" --width "$glow_width" -- "$1"
+else
+  sed -n "1,200p" -- "$1"
+fi
+'
+
+  open_selected='selected=$1; [[ -n $selected ]] || exit 0; "$MD2H_PICK_MD2H" "$MD2H_PICK_SEARCH_DIR/$selected" >/dev/null 2>&1'
+
+  while IFS= read -r file; do
+    relative_path=${file#./}
+    printf '%s\t%s\n' "$(picker_title "$file")" "$relative_path"
+  done < <(find . -type f -iname '*.md' -not -path './.git/*' -print | sort) |
+    fzf \
+      --height 80% \
+      --layout reverse \
+      --border \
+      --ansi \
+      --delimiter $'\t' \
+      --with-nth 1 \
+      --prompt 'md2h> ' \
+      --bind "enter:execute-silent(bash -c '$open_selected' _ {2})" \
+      --preview "bash -c '$preview' _ {2}" \
+      --preview-window 'right:60%:nowrap'
+}
+
+if [[ -z ${input:-} ]]; then
+  if [[ -t 0 ]]; then
+    pick_file || true
+    exit 0
+  fi
+
+  input=$(mktemp "${TMPDIR:-/tmp}/md2h-stdin.XXXXXX.md")
+  trap 'rm -f -- "$input"' EXIT
+  tee "$input" >/dev/null
+else
+  if [[ $# -gt 0 ]]; then
+    input=$1
+  fi
+fi
+
+if [[ ! -f "$input" ]]; then
+  printf 'md2h: input file not found: %s\n' "$input" >&2
+  exit 1
+fi
+
+if [[ -n $output_file ]]; then
+  output=$output_file
+else
+  base_name=$(basename -- "$input")
+  base_name=${base_name%.*}
+  safe_name=$(printf '%s' "$base_name" | LC_ALL=C tr -c 'A-Za-z0-9_.-' '-')
+  safe_name=${safe_name:-markdown}
+  if [[ "$linked" = true ]]; then
+    output="${TMPDIR:-/tmp}/md2h-${safe_name}.$(date +%Y%m%d%H%M%S).$$/${safe_name}.html"
+  else
+    output="/tmp/${safe_name}.$(date +%Y%m%d%H%M%S).$$.html"
+  fi
+fi
+
+converter_args=("$input" "$output")
+if [[ "$embed_images" = true ]]; then
+  converter_args+=(--embed-images)
+fi
+if [[ "$slides" = true ]]; then
+  converter_args+=(--slides)
+fi
+if [[ "$linked" = true ]]; then
+  converter_args+=(--linked)
+fi
+
+if [[ -x "$converter" ]]; then
+  "$converter" "${converter_args[@]}"
+else
+  node "$converter" "${converter_args[@]}"
+fi
+
+open "$output"
+printf 'Opened %s\n' "$output"
