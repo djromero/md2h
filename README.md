@@ -57,6 +57,15 @@ Convert and open a Markdown file:
 md2h notes.md
 ```
 
+Use `--chrome` or `--safari` to open the result in a specific browser:
+
+```sh
+md2h notes.md --chrome
+md2h notes.md --slides --safari
+```
+
+Without either flag, md2h uses your default browser. Browser selection also applies in picker mode. If both flags are supplied, the last one wins.
+
 Specify an output path and embed images as base64 data URLs:
 
 ```sh
@@ -121,7 +130,7 @@ node markdown-to-html.js talk.md dist/talk.html --slides
 - A level-1 heading such as `# Architecture` starts a new main slide and supplies its title.
 - Use `#` or `# ---` to start a slide without displaying a title.
 - A title-less slide containing only one or two lines of text becomes a large, centered cover slide. Cover slides can appear anywhere in the deck.
-- Text-only slides (including bullet lists) automatically enlarge their text to fit the available width and height without scrolling, and recalculate when the window is resized. Slides with images, diagrams, tables, or code blocks keep their existing layout.
+- Text-only slides (including bullet lists) automatically enlarge their text to fit the available width and height without scrolling, and recalculate when the window is resized. Slides containing a single table, with optional headings, also adjust the table font size and cell padding to use the available space while keeping the slide's outer padding. Slides with mixed content, multiple tables, images, diagrams, or code blocks keep their existing layout.
 - A vertical stack shows bottom-centered navigation chevrons: large and animated on its main slide, then smaller and activity-sensitive on its subslides.
 - A thematic break (`---`) inside a main slide starts a vertical subslide. Front-matter delimiters and `# ---` slide delimiters are treated separately.
 

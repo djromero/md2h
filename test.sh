@@ -160,7 +160,12 @@ if [[ -e $output_dir/outside.html || -e $output_dir/ignored.html ]]; then
   exit 1
 fi
 
-ln -s /usr/bin/true "$test_dir/bin/open"
+cat >"$test_dir/bin/open" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >"$MD2H_TEST_OPEN_LOG"
+EOF
+chmod +x "$test_dir/bin/open"
+export MD2H_TEST_OPEN_LOG="$test_dir/open.args"
 PATH="$test_dir/bin:$PATH" TMPDIR="$test_dir/tmp" "$script_dir/md2h" "$source_dir/A.md" --linked >/dev/null
 wrapper_outputs=("$test_dir"/tmp/md2h-A.*/A.html)
 if [[ ${#wrapper_outputs[@]} -ne 1 ]]; then
@@ -169,8 +174,20 @@ if [[ ${#wrapper_outputs[@]} -ne 1 ]]; then
 fi
 assert_file "${wrapper_outputs[0]}"
 assert_file "$(dirname -- "${wrapper_outputs[0]}")/B.html"
+printf '%s\n' "${wrapper_outputs[0]}" >"$test_dir/expected-open.args"
+cmp "$test_dir/expected-open.args" "$MD2H_TEST_OPEN_LOG"
+
+for browser_flag in --chrome --safari; do
+  browser_name='Google Chrome'
+  if [[ $browser_flag == --safari ]]; then browser_name=Safari; fi
+  browser_output="$output_dir/browser result.html"
+  PATH="$test_dir/bin:$PATH" "$script_dir/md2h" "$source_dir/A.md" --slides "$browser_flag" -o "$browser_output" >/dev/null
+  printf '%s\n' -a "$browser_name" "$browser_output" >"$test_dir/expected-open.args"
+  cmp "$test_dir/expected-open.args" "$MD2H_TEST_OPEN_LOG"
+done
 
 "$script_dir/md2h" --help 2>&1 | grep -Fq -- '--linked'
+"$script_dir/md2h" --help 2>&1 | grep -Fq -- '--chrome|--safari'
 "$script_dir/md2h" --help 2>&1 | grep -Fq -- '--howto <option>'
 
 slides_howto=$("$script_dir/md2h" --howto slides)

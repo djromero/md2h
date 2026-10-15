@@ -609,7 +609,7 @@ function tableCell(tag, value, alignment, imageBaseHref, imageCache, imageDir, e
 function isTableStart(lines, index) {
   if (!lines[index] || !lines[index + 1]) return false;
   if (!/\|/.test(lines[index])) return false;
-  return /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$/.test(lines[index + 1]);
+  return /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/.test(lines[index + 1]);
 }
 
 function splitTableRow(line) {
@@ -977,9 +977,20 @@ ${pickerButtons}
         .every((element) => textTags.has(element.tagName)
           && (element.tagName !== 'INPUT' || (element.type === 'checkbox' && element.disabled)));
       slide.classList.toggle('slide-text-only', Boolean(isTextOnly));
+      const tables = content.querySelectorAll('table');
+      const tableTags = new Set([...textTags, 'TABLE', 'THEAD', 'TBODY', 'TFOOT', 'TR', 'TH', 'TD']);
+      const isSingleTable = tables.length === 1
+        && Array.from(content.children).every((element) => element === tables[0] || /^H[1-6]$/.test(element.tagName))
+        && Array.from(tables[0].querySelectorAll('*')).every((element) => tableTags.has(element.tagName)
+          && (element.tagName !== 'INPUT' || (element.type === 'checkbox' && element.disabled)));
+      slide.classList.toggle('slide-single-table', isSingleTable);
     });
 
     function fitTextSlide(slide) {
+      if (slide?.classList.contains('slide-single-table')) {
+        fitTableSlide(slide);
+        return;
+      }
       if (!slide || !slide.classList.contains('slide-text-only')) return;
       const content = slide.querySelector('.slide-content');
       if (!content.clientWidth || !content.clientHeight) return;
@@ -1001,6 +1012,31 @@ ${pickerButtons}
         else high = middle;
       }
       content.style.fontSize = low + 'px';
+      content.scrollTop = 0;
+      content.scrollLeft = 0;
+    }
+
+    function fitTableSlide(slide) {
+      const content = slide.querySelector('.slide-content');
+      const table = content.querySelector('table');
+      if (!content.clientWidth || !content.clientHeight) return;
+      const style = getComputedStyle(content);
+      const bottomLimit = content.clientHeight - parseFloat(style.paddingBottom) - 1;
+      const availableWidth = content.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+      const fits = (size) => {
+        table.style.fontSize = size + 'px';
+        return table.offsetTop + table.offsetHeight <= bottomLimit
+          && table.offsetWidth <= availableWidth + 1
+          && table.scrollWidth <= table.clientWidth + 1;
+      };
+      let low = 1;
+      let high = Math.max(1, content.clientHeight);
+      while (high - low > 0.25) {
+        const middle = (low + high) / 2;
+        if (fits(middle)) low = middle;
+        else high = middle;
+      }
+      table.style.fontSize = low + 'px';
       content.scrollTop = 0;
       content.scrollLeft = 0;
     }
@@ -2590,6 +2626,25 @@ body {
 .slide th,
 .slide td {
   padding: clamp(7px, 1vh, 13px) clamp(8px, 1vw, 15px);
+}
+
+.slide-single-table .slide-content {
+  position: relative;
+  overflow-anchor: none;
+}
+
+.slide-single-table table {
+  margin-bottom: 0;
+  overflow-wrap: anywhere;
+}
+
+.slide-single-table th,
+.slide-single-table td {
+  padding: 0.45em 0.6em;
+}
+
+.slide-single-table th {
+  font-size: 0.82em;
 }
 
 .slide pre {

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  printf 'Usage: md2h [input.md] [--option|-o <output.html>] [--embed-images|-e] [--slides] [--linked] [--howto <option>]\n' >&2
+  printf 'Usage: md2h [input.md] [--option|-o <output.html>] [--embed-images|-e] [--slides] [--linked] [--chrome|--safari] [--howto <option>]\n' >&2
 }
 
 slides_howto() {
@@ -41,6 +41,7 @@ output_file=""
 embed_images=false
 slides=false
 linked=false
+browser_flag=""
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -62,6 +63,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --linked)
       linked=true
+      shift
+      ;;
+    --chrome|--safari)
+      browser_flag=$1
       shift
       ;;
     --howto)
@@ -206,6 +211,7 @@ pick_file() {
 
   export MD2H_PICK_MD2H="$script_dir/md2h"
   export MD2H_PICK_SEARCH_DIR=$PWD
+  export MD2H_PICK_BROWSER_FLAG=$browser_flag
   export MD2H_PICK_DARK_STYLE
   MD2H_PICK_DARK_STYLE=$(resource_path glow-dark.json)
   export MD2H_PICK_LIGHT_STYLE
@@ -231,7 +237,7 @@ else
 fi
 '
 
-  open_selected='selected=$1; [[ -n $selected ]] || exit 0; "$MD2H_PICK_MD2H" "$MD2H_PICK_SEARCH_DIR/$selected" >/dev/null 2>&1'
+  open_selected='selected=$1; [[ -n $selected ]] || exit 0; browser_args=(); if [[ -n $MD2H_PICK_BROWSER_FLAG ]]; then browser_args+=("$MD2H_PICK_BROWSER_FLAG"); fi; "$MD2H_PICK_MD2H" "$MD2H_PICK_SEARCH_DIR/$selected" "${browser_args[@]}" >/dev/null 2>&1'
 
   while IFS= read -r file; do
     relative_path=${file#./}
@@ -301,5 +307,10 @@ else
   node "$converter" "${converter_args[@]}"
 fi
 
-open "$output"
+open_args=("$output")
+case $browser_flag in
+  --chrome) open_args=(-a "Google Chrome" "$output") ;;
+  --safari) open_args=(-a "Safari" "$output") ;;
+esac
+open "${open_args[@]}"
 printf 'Opened %s\n' "$output"
