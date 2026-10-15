@@ -1,0 +1,4 @@
+interface:
+  display_name: "Team Slide Summary"
+  short_description: "Summarize Markdown as an md2h slide deck"
+  default_prompt: "Use $md2h-team-slides to create a team slide summary from \"document.md\"."

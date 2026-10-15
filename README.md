@@ -13,6 +13,7 @@
 * Image zoom on click
 * Dark/Light Appearance
 * Collapsed header levels 3+
+* Expandable Markdown blocks with `expand` fences
 * Full width view (when outline is hidden)
 * Custom output path with `--option`/`-o`
 * Full-screen slide decks with `--slides`
@@ -33,6 +34,14 @@ make install
 ```
 
 By default this installs `md2h` to `~/.local/bin`. Ensure that directory is on your `PATH`.
+
+Optionally install the bundled team slide summary skill for Codex CLI:
+
+```sh
+make install-skills
+```
+
+`make install` does not install skills. `make install-skills` installs the bundled `md2h-team-slides` skill to `~/.agents/skills`, replacing any existing copy. Override the destination with `CODEX_SKILLS_DIR` if needed.
 
 ## Usage
 
@@ -62,6 +71,30 @@ md2h docs/index.md --linked -o dist/index.html
 
 Linked documents are discovered transitively within the entry document's directory and its subdirectories. Links can include the `.md` extension or omit it, as in `[Guide](guides/start)`. The generated HTML preserves that directory structure, rewrites Markdown links to their HTML counterparts, and safely handles circular links. External URLs, absolute paths, missing files, and links that resolve outside the entry directory are not followed. Without `-o`, the collection is written to a temporary directory. Only the entry document is opened in the browser.
 
+### Technical identifiers
+
+Identifiers with internal underscores, such as raw_employee_payment_breakdown.payload.output,
+external_refunds, and ES::ConceptType.after_tax, automatically render as inline code.
+Intentional `_italic_` and `__bold__` formatting still works. Link destinations,
+image URLs, and existing code spans retain their original content. Use backticks
+to explicitly format other technical terms as code.
+
+### Expandable content
+
+Use an `expand` code fence for an expandable block. The first line is its title; the remaining lines render as Markdown. Blocks start collapsed and show a chevron pointing right when collapsed and down when expanded. The tinted background follows the light or dark appearance, including while collapsed.
+
+````markdown
+```expand
+The title goes here
+
+This is the content, with **formatting**.
+
+- A list item
+```
+````
+
+Click the title or focus it and press Enter or Space to expand or collapse the block. Expandable blocks also work in slide decks.
+
 ### Slide decks
 
 Use `--slides` to render a full-screen presentation. Each level-1 heading starts a main slide:
@@ -88,6 +121,7 @@ node markdown-to-html.js talk.md dist/talk.html --slides
 - A level-1 heading such as `# Architecture` starts a new main slide and supplies its title.
 - Use `#` or `# ---` to start a slide without displaying a title.
 - A title-less slide containing only one or two lines of text becomes a large, centered cover slide. Cover slides can appear anywhere in the deck.
+- Text-only slides (including bullet lists) automatically enlarge their text to fit the available width and height without scrolling, and recalculate when the window is resized. Slides with images, diagrams, tables, or code blocks keep their existing layout.
 - A vertical stack shows bottom-centered navigation chevrons: large and animated on its main slide, then smaller and activity-sensitive on its subslides.
 - A thematic break (`---`) inside a main slide starts a vertical subslide. Front-matter delimiters and `# ---` slide delimiters are treated separately.
 

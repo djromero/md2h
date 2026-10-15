@@ -1,0 +1,48 @@
+sequenceDiagram
+    autonumber
+    participant BFF as BFF
+    participant Service as service
+    participant Documents as documents
+
+    Note over Service: Worker event or admin creation request<br/>US worker; no compliance record for this version
+    Service->>Service: Generate document UUID
+    Service->>Documents: POST /api/v1/documents<br/>uuid, candidate references, S3 object location,<br/>signature definition and stamp coordinates
+    Documents->>Documents: Create document record and defer file import
+    Documents-->>Service: 201 document UUID, title, status, status_message<br/>No signature request ID
+    Service->>Service: Persist worker ID, document UUID and version
+    Documents->>Documents: Fetch source S3 file and store its own copy<br/>Create pending signature request
+
+    Note over BFF: Mobile requests GET /api/v1/fintech/signature
+    BFF->>Service: GET /api/ewa/v1/requirements/signature<br/>Authenticated worker context
+    Service->>Service: Load compliance record and document UUID
+    Service->>Documents: GET /api/v1/signatures?document_id={uuid}
+    Documents-->>Service: Signature request UUID and status
+    Service->>Service: Persist signature request ID and status
+    Service-->>BFF: signatureRequired and signatureRequestId
+    BFF->>BFF: Prefix ID with docs-signature:<br/>Return signature configuration to mobile
+
+    Note over BFF: Mobile opens the signature through the drive
+    BFF->>Documents: GET /api/v1/signatures<br/>Candidate signer filter and status=pending
+    Documents-->>BFF: Candidate's pending signature requests
+    BFF->>Documents: GET /api/v1/documents/{document_uuid}
+    Documents-->>BFF: Document details and stored file URL
+    BFF->>BFF: Check candidate reference<br/>Return file URL and signing options to mobile
+
+    Note over BFF: Mobile submits signature response and picture URL<br/>through Sister's candidate signature response route
+    BFF->>Documents: GET /api/v1/signatures<br/>Candidate signer filter and status=pending
+    Documents-->>BFF: Pending requests for ownership/request validation
+    BFF->>Documents: POST /api/v1/signatures<br/>request_uuid, response uuid, signer,<br/>kind and Zeppelin picture location
+    Documents->>Documents: Create response; status=processing<br/>Set status=signed; generate and store signed PDF
+    Documents-->>BFF: 201 response UUID, request UUID,<br/>document UUID and status
+    Note over Documents: No signature-completed event or callback<br/>signed is set before PDF storage finishes
+
+    Note over BFF,Service: Later signature, requirements or eligibility check
+    BFF->>Service: Request current requirements or eligibility
+    alt Compliance is not already cached as signed
+        Service->>Documents: GET /api/v1/signatures?document_id={uuid}
+        Documents-->>Service: Current signature request status
+        Service->>Service: Update local signature ID/status
+    else Compliance is already cached as signed
+        Service->>Service: Reuse signed compliance record
+    end
+    Service-->>BFF: Current requirement or eligibility result

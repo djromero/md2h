@@ -206,7 +206,15 @@ function renderMarkdown(source, fallbackTitle, imageBaseHref, imageCache, imageD
       }
 
       const code = escapeHtml(codeLines.join('\n'));
-      if (lang.toLowerCase() === 'mermaid') {
+      if (lang.toLowerCase() === 'expand') {
+        const title = renderInline(codeLines[0] || 'Details', imageBaseHref, imageCache, imageDir, embedImages, rewriteLink);
+        const content = renderMarkdown(codeLines.slice(1).join('\n'), fallbackTitle, imageBaseHref, imageCache, imageDir, embedImages, false, rewriteLink);
+        hasMermaid ||= content.hasMermaid;
+        html.push(`<details class="expand-block">
+  <summary><span class="expand-chevron" aria-hidden="true"></span><span>${title}</span></summary>
+  <div class="expand-content">${content.body}</div>
+</details>`);
+      } else if (lang.toLowerCase() === 'mermaid') {
         hasMermaid = true;
         html.push(`<div class="diagram-container">
   <button class="diagram-expand-button" type="button" aria-label="Expand diagram" title="Expand diagram">↗</button>
@@ -358,30 +366,34 @@ function renderSlides(blocks) {
     return { ...group, subslides };
   });
 
-  const firstGroup = slideGroups[0];
-  const firstSlideText = firstGroup && firstGroup.title === ''
-    ? firstGroup.subslides[0]
+  const titlelessSlideText = slideGroups.map((group) => group.title === ''
+    ? group.subslides[0]
       .filter((block) => block && block.slideText && block.titleText)
       .map((block) => block.titleText)
       .join(' ')
       .trim()
-    : '';
+    : '');
+  const firstGroup = slideGroups[0];
+  const firstSlideText = titlelessSlideText[0] || '';
 
   const slideData = slideGroups.map((group, index) => ({
     id: `md2h-slide-${index + 1}`,
     number: index + 1,
     title: group.title || `Slide ${index + 1}`,
+    searchText: group.title || titlelessSlideText[index],
     subslideCount: group.subslides.length,
   }));
   const body = slideGroups.flatMap((group, index) => {
     const slide = slideData[index];
     return group.subslides.map((blocks, subslideIndex) => {
       const textLineCount = blocks.reduce((count, block) => count + (block.slideText ? block.lineCount : 0), 0);
-      const isCover = subslideIndex === 0
+      const isTitlelessTextSlide = subslideIndex === 0
         && group.title === ''
         && blocks.length > 0
         && blocks.every((block) => block.slideText)
         && textLineCount <= 2;
+      const isCover = isTitlelessTextSlide && index === 0;
+      const isHero = isTitlelessTextSlide && index > 0;
       const renderedBlocks = blocks.map((block) => block.slideText ? block.html : block);
       const mediaIndex = renderedBlocks.length === 1
         ? 0
@@ -411,7 +423,7 @@ ${hasNextSubslide ? `<div class="slide-subslide-cue ${subslideIndex === 0 ? 'sli
       const label = group.subslides.length > 1
         ? `${slide.title}, subslide ${subslideIndex + 1} of ${group.subslides.length}`
         : slide.title;
-      const classes = ['slide', active ? 'is-active' : '', isCover ? 'slide-cover' : '', isMediaOnly ? 'slide-media-only' : ''].filter(Boolean).join(' ');
+      const classes = ['slide', active ? 'is-active' : '', isCover ? 'slide-cover' : '', isHero ? 'slide-hero' : '', isMediaOnly ? 'slide-media-only' : ''].filter(Boolean).join(' ');
       return `<section class="${classes}" id="${id}" data-slide-index="${index}" data-subslide-index="${subslideIndex}" aria-label="${escapeAttr(label)}" aria-hidden="${active ? 'false' : 'true'}">
   <div class="slide-content">
 ${mainContent}
@@ -547,6 +559,7 @@ function renderFrontMatterValue(entry) {
 
 function renderTable(lines, startIndex, imageBaseHref, imageCache, imageDir, embedImages, rewriteLink) {
   const headers = splitTableRow(lines[startIndex]);
+  const nowrapColumns = headers.map((header) => header === 'ID' || header === 'Issue');
   const alignments = splitTableRow(lines[startIndex + 1]).map((cell) => {
     const trimmed = cell.trim();
     if (/^:-+:$/.test(trimmed)) return 'center';
@@ -563,10 +576,10 @@ function renderTable(lines, startIndex, imageBaseHref, imageCache, imageDir, emb
   }
 
   const headerHtml = headers
-    .map((header, index) => tableCell('th', header, alignments[index], imageBaseHref, imageCache, imageDir, embedImages, rewriteLink))
+    .map((header, index) => tableCell('th', header, alignments[index], imageBaseHref, imageCache, imageDir, embedImages, rewriteLink, nowrapColumns[index]))
     .join('');
   const bodyHtml = rows
-    .map((row) => `<tr>${row.map((cell, index) => tableCell('td', cell, alignments[index], imageBaseHref, imageCache, imageDir, embedImages, rewriteLink)).join('')}</tr>`)
+    .map((row) => `<tr>${row.map((cell, index) => tableCell('td', cell, alignments[index], imageBaseHref, imageCache, imageDir, embedImages, rewriteLink, nowrapColumns[index])).join('')}</tr>`)
     .join('\n');
 
   return {
@@ -585,8 +598,11 @@ function indentationLevel(whitespace) {
   return Math.floor(spaces / 2);
 }
 
-function tableCell(tag, value, alignment, imageBaseHref, imageCache, imageDir, embedImages, rewriteLink) {
-  const style = alignment ? ` style="text-align: ${alignment}"` : '';
+function tableCell(tag, value, alignment, imageBaseHref, imageCache, imageDir, embedImages, rewriteLink, nowrap = false) {
+  const styles = [];
+  if (alignment) styles.push(`text-align: ${alignment}`);
+  if (nowrap) styles.push('white-space: nowrap');
+  const style = styles.length ? ` style="${styles.join('; ')}"` : '';
   return `<${tag}${style}>${renderInline(value, imageBaseHref, imageCache, imageDir, embedImages, rewriteLink)}</${tag}>`;
 }
 
@@ -605,41 +621,63 @@ function splitTableRow(line) {
 
 function renderInline(value, imageBaseHref, imageCache, imageDir, embedImages, rewriteLink = (url) => url) {
   const codeTokens = [];
-  let text = value.replace(/`([^`]+)`/g, (_, code) => {
+  const protect = (html) => {
     const token = `\uE000${codeTokens.length}\uE001`;
-    codeTokens.push(`<code>${escapeHtml(code)}</code>`);
+    codeTokens.push(html);
     return token;
-  });
-
-  text = escapeHtml(text);
-
-  text = text.replace(/!\[([^\]]*)\]\(([^)]+?)(?:\s+"([^"]+)")?\)/g, (_, alt, url, title) => {
-    const titleAttr = title ? ` title="${escapeAttr(title)}"` : '';
-    return `<img src="${safeImageUrl(url, imageBaseHref, imageCache, imageDir, embedImages)}" alt="${escapeAttr(alt)}"${titleAttr}>`;
-  });
-
-  text = text.replace(/\[([^\]]+)\]\(([^)]+?)(?:\s+"([^"]+)")?\)/g, (_, label, url, title) => {
-    const titleAttr = title ? ` title="${escapeAttr(title)}"` : '';
-    return `<a href="${safeUrl(rewriteLink(url))}"${titleAttr}>${label}</a>`;
-  });
-
-  text = text
+  };
+  const formatText = (text) => replaceTechnicalIdentifiers(text, (identifier) => protect(`<code>${identifier}</code>`))
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/__([^_]+)__/g, '<strong>$1</strong>')
     .replace(/~~([^~]+)~~/g, '<del>$1</del>')
     .replace(/\*([^*\s][^*]*?)\*/g, '<em>$1</em>')
     .replace(/_([^_\s][^_]*?)_/g, '<em>$1</em>');
+  let text = value.replace(/`([^`]+)`/g, (_, code) => protect(`<code>${escapeHtml(code)}</code>`));
 
-  return text.replace(/\uE000(\d+)\uE001/g, (_, index) => codeTokens[Number(index)]);
+  text = escapeHtml(text);
+
+  text = text.replace(/!\[([^\]]*)\]\(([^)]+?)(?:\s+"([^"]+)")?\)/g, (_, alt, url, title) => {
+    const titleAttr = title ? ` title="${escapeAttr(title)}"` : '';
+    return protect(`<img src="${safeImageUrl(url, imageBaseHref, imageCache, imageDir, embedImages)}" alt="${escapeAttr(alt)}"${titleAttr}>`);
+  });
+
+  text = text.replace(/\[([^\]]+)\]\(([^)]+?)(?:\s+"([^"]+)")?\)/g, (_, label, url, title) => {
+    const titleAttr = title ? ` title="${escapeAttr(title)}"` : '';
+    return protect(`<a href="${safeUrl(rewriteLink(url))}"${titleAttr}>${formatText(label)}</a>`);
+  });
+
+  // Bare URLs also contain underscores, but are not technical identifiers.
+  text = text.replace(/\b(?:[A-Za-z][A-Za-z0-9+.-]*:\/\/|mailto:|www\.)[^\s<>\uE000\uE001]+/g, (url) => protect(url));
+  text = formatText(text);
+
+  const restore = (text) => text.replace(/\uE000(\d+)\uE001/g, (_, index) => restore(codeTokens[Number(index)]));
+  return restore(text);
+}
+
+function replaceTechnicalIdentifiers(value, render) {
+  return value.replace(/[A-Za-z_$][A-Za-z0-9_$]*(?:(?:\.|::)[A-Za-z_$][A-Za-z0-9_$]*)*/g, (identifier) => {
+    const emphasis = identifier.match(/^(_{1,2})(.*?)\1$/);
+    const core = emphasis ? emphasis[2] : identifier;
+    if (!core.replace(/^_+|_+$/g, '').includes('_')) return identifier;
+    return emphasis ? `${emphasis[1]}${render(core)}${emphasis[1]}` : render(core);
+  });
 }
 
 function stripInlineMarkdown(value) {
-  return value
-    .replace(/`([^`]+)`/g, '$1')
+  const tokens = [];
+  const protect = (text) => {
+    const token = `\uE000${tokens.length}\uE001`;
+    tokens.push(text);
+    return token;
+  };
+  let text = value
+    .replace(/`([^`]+)`/g, (_, code) => protect(code))
     .replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1')
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+  text = replaceTechnicalIdentifiers(text, protect)
     .replace(/[*_~]/g, '')
     .trim();
+  return text.replace(/\uE000(\d+)\uE001/g, (_, index) => tokens[Number(index)]);
 }
 
 function slugify(value) {
@@ -795,26 +833,22 @@ function webFontLinks() {
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,400..800;1,400..800&amp;family=Roboto+Mono:ital,wght@0,400..700;1,400..700&amp;display=swap">`;
 }
 
-function buildSlidesDocument({ body, fallbackTitle, frontMatter, hasMermaid, slides, title }) {
-  const configuredAppearance = frontMatterValue(frontMatter, 'appearance').toLowerCase();
-  const appearance = ['light', 'dark'].includes(configuredAppearance) ? configuredAppearance : '';
-  const configuredHighlightTheme = frontMatterValue(frontMatter, 'theme').toLowerCase();
-  const safeHighlightTheme = /^[a-z0-9][a-z0-9._/-]*$/.test(configuredHighlightTheme) && !configuredHighlightTheme.includes('..')
-    ? configuredHighlightTheme
-    : '';
-  const highlightTheme = safeHighlightTheme || (appearance === 'light' ? 'github' : 'github-dark');
-  const pickerButtons = slides.map((slide) => `<div class="slide-picker-item" data-slide-target="${slide.number - 1}" data-slide-title="${escapeAttr(slide.title)}">
-  <div class="slide-picker-preview" data-slide-preview="${slide.number - 1}" aria-hidden="true" inert></div>
-  <div class="slide-picker-caption" aria-hidden="true">
-    <span class="slide-picker-number">${slide.number}</span>
-    <span class="slide-picker-label">${escapeHtml(slide.title)}</span>
-    ${slide.subslideCount > 1 ? `<span class="slide-picker-subslides" title="${slide.subslideCount} vertical subslides">↕</span>` : ''}
-  </div>
-  <button class="slide-picker-select" type="button" data-slide-target="${slide.number - 1}" aria-label="Go to slide ${slide.number}: ${escapeAttr(slide.title)}${slide.subslideCount > 1 ? ` (${slide.subslideCount} vertical subslides)` : ''}"></button>
-</div>`).join('\n');
+function escapeSequenceSemicolons(source) {
+  if (!/^\s*sequenceDiagram\b/m.test(source)) return source;
 
-  const mermaidScript = hasMermaid
-    ? `<script type="module">
+  return source.split('\n').map((line) => {
+    if (/^\s*%%/.test(line)) return line;
+    // Semicolons in notes and arrow labels are text; elsewhere they are syntax.
+    const label = line.match(/^([\t ]*(?:Note[\t ]+(?:over|(?:left|right)[\t ]+of)\b[^:]*|[^:\n]*?(?:->|-->|-x|--x|-\)|--\))[^:]*):)(.*)$/i);
+    if (!label) return line;
+    const text = label[2].replace(/(?:#(?:\d+|[a-z]\w*);|&(?:#\d+|#x[\da-f]+|[a-z]\w*);)|;/gi,
+      (token) => token === ';' ? '#59;' : token);
+    return label[1] + text;
+  }).join('\n');
+}
+
+function buildMermaidScript() {
+  return `<script type="module">
   import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
   const isDark = document.documentElement.dataset.theme === 'dark';
   mermaid.initialize({
@@ -845,9 +879,46 @@ function buildSlidesDocument({ body, fallbackTitle, frontMatter, hasMermaid, sli
     } : undefined,
   });
   await document.fonts.ready;
+  const escapeSequenceSemicolons = ${escapeSequenceSemicolons.toString()};
+  for (const diagram of document.querySelectorAll('pre.mermaid')) {
+    const source = diagram.textContent;
+    const escaped = escapeSequenceSemicolons(source);
+    if (escaped === source) continue;
+    try {
+      await mermaid.parse(source);
+    } catch {
+      // Only repair invalid input, so valid semicolon-separated statements survive.
+      try {
+        await mermaid.parse(escaped);
+        diagram.textContent = escaped;
+      } catch {
+        // Keep the original source for Mermaid's normal syntax-error reporting.
+      }
+    }
+  }
   await mermaid.run();
-</script>`
+</script>`;
+}
+
+function buildSlidesDocument({ body, fallbackTitle, frontMatter, hasMermaid, slides, title }) {
+  const configuredAppearance = frontMatterValue(frontMatter, 'appearance').toLowerCase();
+  const appearance = ['light', 'dark'].includes(configuredAppearance) ? configuredAppearance : '';
+  const configuredHighlightTheme = frontMatterValue(frontMatter, 'theme').toLowerCase();
+  const safeHighlightTheme = /^[a-z0-9][a-z0-9._/-]*$/.test(configuredHighlightTheme) && !configuredHighlightTheme.includes('..')
+    ? configuredHighlightTheme
     : '';
+  const highlightTheme = safeHighlightTheme || (appearance === 'light' ? 'github' : 'github-dark');
+  const pickerButtons = slides.map((slide) => `<div class="slide-picker-item" data-slide-target="${slide.number - 1}" data-slide-search-text="${escapeAttr(slide.searchText || slide.title)}">
+  <div class="slide-picker-preview" data-slide-preview="${slide.number - 1}" aria-hidden="true" inert></div>
+  <div class="slide-picker-caption" aria-hidden="true">
+    <span class="slide-picker-number">${slide.number}</span>
+    <span class="slide-picker-label">${escapeHtml(slide.title)}</span>
+    ${slide.subslideCount > 1 ? `<span class="slide-picker-subslides" title="${slide.subslideCount} vertical subslides">↕</span>` : ''}
+  </div>
+  <button class="slide-picker-select" type="button" data-slide-target="${slide.number - 1}" aria-label="Go to slide ${slide.number}: ${escapeAttr(slide.title)}${slide.subslideCount > 1 ? ` (${slide.subslideCount} vertical subslides)` : ''}"></button>
+</div>`).join('\n');
+
+  const mermaidScript = hasMermaid ? buildMermaidScript() : '';
 
   return `<!doctype html>
 <html lang="en"${appearance ? ` data-theme="${appearance}"` : ''}>
@@ -875,7 +946,7 @@ ${body}
     <div class="slide-picker-panel">
       <div class="slide-picker-heading">
         <h2 id="slide-picker-title">Slides</h2>
-        <input id="slide-picker-search" type="search" aria-label="Search slide titles" placeholder="Search slides" autocomplete="off" spellcheck="false" hidden>
+        <input id="slide-picker-search" type="search" aria-label="Search slides" placeholder="Search slides" autocomplete="off" spellcheck="false" hidden>
         <button id="slide-picker-close" type="button" aria-label="Close slide picker">×</button>
       </div>
       <div class="slide-picker-grid">
@@ -895,6 +966,50 @@ ${pickerButtons}
       const slideIndex = Number(slide.dataset.slideIndex);
       (slideGroups[slideIndex] ||= []).push(slide);
     });
+    // Only ordinary text and inline formatting participate in automatic fitting.
+    const textTags = new Set(['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'P', 'UL', 'OL', 'LI',
+      'BLOCKQUOTE', 'A', 'STRONG', 'EM', 'DEL', 'S', 'CODE', 'BR', 'SPAN', 'DIV',
+      'DETAILS', 'SUMMARY', 'INPUT']);
+    slideElements.forEach((slide) => {
+      if (slide.matches('.slide-cover, .slide-hero')) return;
+      const content = slide.querySelector('.slide-content');
+      const isTextOnly = content.textContent.trim() && Array.from(content.querySelectorAll('*'))
+        .every((element) => textTags.has(element.tagName)
+          && (element.tagName !== 'INPUT' || (element.type === 'checkbox' && element.disabled)));
+      slide.classList.toggle('slide-text-only', Boolean(isTextOnly));
+    });
+
+    function fitTextSlide(slide) {
+      if (!slide || !slide.classList.contains('slide-text-only')) return;
+      const content = slide.querySelector('.slide-content');
+      if (!content.clientWidth || !content.clientHeight) return;
+      const style = getComputedStyle(content);
+      const availableHeight = content.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
+      const fits = (size) => {
+        content.style.fontSize = size + 'px';
+        const bottom = Math.max(...Array.from(content.children, (child) =>
+          child.offsetTop + child.offsetHeight + parseFloat(getComputedStyle(child).marginBottom)));
+        return bottom <= content.clientHeight - parseFloat(style.paddingBottom) - 1
+          && content.scrollWidth <= content.clientWidth;
+      };
+      // Search actual browser layout, including wrapping, heading sizes and list spacing.
+      let low = 1;
+      let high = Math.max(1, availableHeight);
+      while (high - low > 0.25) {
+        const middle = (low + high) / 2;
+        if (fits(middle)) low = middle;
+        else high = middle;
+      }
+      content.style.fontSize = low + 'px';
+      content.scrollTop = 0;
+      content.scrollLeft = 0;
+    }
+
+    function fitTextSlides() {
+      slideElements.forEach(fitTextSlide);
+      sizeSlidePreviews();
+    }
+
     const previousButton = document.getElementById('slide-prev');
     const nextButton = document.getElementById('slide-next');
     const currentLabel = document.getElementById('slide-current');
@@ -941,6 +1056,7 @@ ${pickerButtons}
       if (nextIndex !== currentSlide || nextSubslide !== currentSubslide) {
         slideGroups[nextIndex][nextSubslide].querySelector('.slide-content').scrollTop = 0;
       }
+      fitTextSlide(slideGroups[nextIndex][nextSubslide]);
       currentSlide = nextIndex;
       currentSubslide = nextSubslide;
       currentLabel.textContent = String(currentSlide + 1);
@@ -997,15 +1113,15 @@ ${pickerButtons}
       setPickerSelection(Number(items[nextIndex].dataset.slideTarget), true);
     }
 
-    function normalizeSlideTitle(value) {
+    function normalizeSlideSearchText(value) {
       return value.normalize('NFKD').toLocaleLowerCase().replace(/[^\\p{L}\\p{N}]/gu, '');
     }
 
     function filterPickerItems() {
-      const query = normalizeSlideTitle(pickerSearch.value);
+      const query = normalizeSlideSearchText(pickerSearch.value);
       let visibleCount = 0;
       picker.querySelectorAll('.slide-picker-item').forEach((item) => {
-        const matches = normalizeSlideTitle(item.dataset.slideTitle).includes(query);
+        const matches = normalizeSlideSearchText(item.dataset.slideSearchText).includes(query);
         item.hidden = !matches;
         if (matches) visibleCount += 1;
       });
@@ -1193,7 +1309,7 @@ ${pickerButtons}
         setPickerOpen(true);
         return;
       }
-      if (editable || picker.classList.contains('is-open') || event.altKey || event.ctrlKey || event.metaKey) return;
+      if (editable || event.target.closest('.expand-block > summary') || picker.classList.contains('is-open') || event.altKey || event.ctrlKey || event.metaKey) return;
       if (event.key === 'z') {
         event.preventDefault();
         const expandedDiagram = document.querySelector('.diagram-expanded');
@@ -1242,6 +1358,7 @@ ${pickerButtons}
         miniature.style.width = slideWidth + 'px';
         miniature.style.height = slideHeight + 'px';
         miniature.style.transform = 'scale(' + (preview.clientWidth / slideWidth) + ')';
+        fitTextSlide(miniature);
       });
     }
 
@@ -1265,11 +1382,15 @@ ${pickerButtons}
     }
 
     window.addEventListener('hashchange', goToHashSlide);
-    window.addEventListener('resize', sizeSlidePreviews);
+    window.addEventListener('resize', fitTextSlides);
+    if (window.ResizeObserver) new ResizeObserver(fitTextSlides).observe(deck);
+    document.fonts.ready.then(fitTextSlides);
+    deck.addEventListener('toggle', (event) => fitTextSlide(event.target.closest('.slide')), true);
     document.addEventListener('pointermove', showSubslideCue, { passive: true });
     document.addEventListener('pointerdown', showSubslideCue, { passive: true });
     document.addEventListener('keydown', showSubslideCue);
     buildSlidePreviews();
+    fitTextSlides();
     goToHashSlide();
     showSubslideCue();
   </script>
@@ -1296,41 +1417,7 @@ function buildDocument({ body, fallbackTitle, hasMermaid, headings, title }) {
 </aside>`
     : '';
 
-  const mermaidScript = hasMermaid
-    ? `<script type="module">
-  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
-  const isDark = document.documentElement.dataset.theme === 'dark';
-  mermaid.initialize({
-    startOnLoad: false,
-    fontFamily: 'Inter, ui-sans-serif, sans-serif',
-    theme: isDark ? 'dark' : 'default',
-    themeVariables: isDark ? {
-      primaryColor: '#263544',
-      primaryTextColor: '#e5edf5',
-      primaryBorderColor: '#aab7c5',
-      lineColor: '#aab7c5',
-      actorBkg: '#263544',
-      actorBorder: '#aab7c5',
-      actorTextColor: '#e5edf5',
-      actorLineColor: '#718096',
-      signalColor: '#aab7c5',
-      signalTextColor: '#e5edf5',
-      labelBoxBkgColor: '#263544',
-      labelBoxBorderColor: '#aab7c5',
-      labelTextColor: '#e5edf5',
-      loopTextColor: '#e5edf5',
-      noteBkgColor: '#334155',
-      noteBorderColor: '#aab7c5',
-      noteTextColor: '#e5edf5',
-      activationBkgColor: '#334155',
-      activationBorderColor: '#aab7c5',
-      sequenceNumberColor: '#e5edf5',
-    } : undefined,
-  });
-  await document.fonts.ready;
-  await mermaid.run();
-</script>`
-    : '';
+  const mermaidScript = hasMermaid ? buildMermaidScript() : '';
 
   return `<!doctype html>
 <html lang="en">
@@ -1775,6 +1862,57 @@ h5,
 h6 {
   margin: 26px 0 8px;
   color: var(--text);
+}
+
+.expand-block {
+  margin: 18px 0;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--accent-soft);
+}
+
+.expand-block > summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 18px;
+  color: var(--text);
+  font-weight: 700;
+  list-style: none;
+  cursor: pointer;
+}
+
+.expand-block > summary::-webkit-details-marker {
+  display: none;
+}
+
+.expand-block > summary:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+.expand-chevron {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-right: 2px solid var(--accent);
+  border-bottom: 2px solid var(--accent);
+  transform: rotate(-45deg);
+  transition: transform 0.14s ease;
+}
+
+.expand-block[open] > summary .expand-chevron {
+  transform: rotate(45deg);
+}
+
+.expand-content {
+  padding: 0 18px 18px;
+  overflow-wrap: anywhere;
+}
+
+.expand-content > :last-child {
+  margin-bottom: 0;
 }
 
 .section-collapse {
@@ -2305,14 +2443,14 @@ body {
   flex: 0 0 auto;
 }
 
-.slide-cover .slide-content {
+:is(.slide-cover, .slide-hero) .slide-content {
   align-items: center;
   justify-content: center;
   padding-bottom: clamp(28px, 5vw, 80px);
   text-align: center;
 }
 
-.slide-cover .slide-content > p {
+:is(.slide-cover, .slide-hero) .slide-content > p {
   max-width: 16ch;
   margin: 0.08em 0;
   color: var(--text);
@@ -2412,6 +2550,37 @@ body {
 .slide table,
 .slide .diagram-container {
   margin-bottom: clamp(14px, 2.2vh, 28px);
+}
+
+.slide-text-only .slide-content {
+  position: relative;
+  overflow-anchor: none;
+  font-size: clamp(24px, 2.2vw, 36px);
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.slide-text-only h1 { font-size: 2em; }
+.slide-text-only h2 { font-size: 1.5em; }
+.slide-text-only h3 { font-size: 1.2em; }
+.slide-text-only :is(h4, h5, h6) { font-size: 1em; }
+
+.slide-text-only h1 {
+  margin-bottom: 0.55em;
+  padding-bottom: 0.35em;
+}
+
+.slide-text-only :is(h2, h3, h4, h5, h6) {
+  margin-top: 0.6em;
+  margin-bottom: 0.3em;
+}
+
+.slide-text-only :is(p, ul, ol, blockquote) {
+  margin-bottom: 0.65em;
+}
+
+.slide-text-only li {
+  margin: 0.25em 0;
 }
 
 .slide table {
